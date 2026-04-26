@@ -72,89 +72,34 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
     return products
 
 
-def _extract_asin(url: str) -> str | None:
-    match = re.search(r"/(?:dp|gp/product)/([A-Z0-9]{10})", url)
-    return match.group(1) if match else None
-
-
-async def _scrape_amazon_price(asin: str) -> dict | None:
-    scraper_path = os.path.expanduser("~/amazon-product-api/price_lookup.js")
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            "node", scraper_path, asin,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=12)
-        data = json.loads(stdout.decode())
-        if "error" not in data:
-            return data
-    except Exception:
-        pass
-    return None
-
-
-def _extract_walmart_item_id(url: str) -> str | None:
-    match = re.search(r"/ip/[^/]+/(\d+)", url) or re.search(r"/(\d{6,12})(?:\?|$)", url)
-    return match.group(1) if match else None
-
-
-async def _scrape_walmart_price(item_id: str) -> dict | None:
-    if OMKAR_API_KEY:
-        try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
-                resp = await client.get(
-                    "https://walmart-scraper.omkar.cloud/walmart/product",
-                    params={"product_id": item_id},
-                    headers={"API-Key": OMKAR_API_KEY},
-                )
-                if resp.status_code == 200:
-                    d = resp.json()
-                    price = d.get("pricing", {}).get("current_price") or 0
-                    if price:
-                        return {
-                            "price": float(price),
-                            "beforePrice": float(d.get("pricing", {}).get("original_price") or 0),
-                            "title": d.get("name", ""),
-                            "image": (d.get("images") or [""])[0],
-                            "rating": d.get("avg_rating", 0),
-                            "reviewCount": d.get("review_count", 0),
-                            "available": d.get("in_stock", False),
-                        }
-        except Exception:
-            pass
-    return None
-
-
-async def _enrich_with_scraper(products: list[dict]) -> list[dict]:
-    tasks, indices = [], []
-    for i, p in enumerate(products):
-        src = p.get("source")
-        if src == "amazon":
-            asin = _extract_asin(p.get("url", ""))
-            if asin:
-                tasks.append(_scrape_amazon_price(asin))
-                indices.append(i)
-        elif src == "walmart" and OMKAR_API_KEY:
-            item_id = _extract_walmart_item_id(p.get("url", ""))
-            if item_id:
-                tasks.append(_scrape_walmart_price(item_id))
-                indices.append(i)
-
-    if not tasks:
+async def _claude_fill_missing_prices(products: list[dict]) -> list[dict]:
+    """Use Claude to estimate prices for Amazon products Tavily didn't extract a price for."""
+    missing = [(i, p) for i, p in enumerate(products) if not p.get("price") or p["price"] <= 0]
+    if not missing or not ANTHROPIC_API_KEY:
         return products
 
-    results = await asyncio.gather(*tasks)
-    for i, data in zip(indices, results):
-        if data:
-            products[i]["price"] = data.get("price") or products[i].get("price", 0)
-            products[i]["before_price"] = data.get("beforePrice", 0)
-            products[i]["discounted"] = bool(data.get("beforePrice"))
-            if data.get("image"):
-                products[i]["main_image"] = data["image"]
-            if data.get("rating"):
-                products[i]["rating"] = data["rating"]
-            products[i]["fsa_confirmed"] = True
+    items = [{"index": i, "name": p["name"], "retailer": p.get("source", "amazon")} for i, p in missing]
+    try:
+        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=512,
+            messages=[{"role": "user", "content": f"""Estimate realistic current retail prices for these FSA-eligible products. Return ONLY JSON:
+[{{"index": 0, "price": 12.99}}]
+
+Products: {json.dumps(items)}"""}],
+        )
+        raw = msg.content[0].text.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        for e in json.loads(raw.strip()):
+            idx = e.get("index")
+            if idx is not None and e.get("price"):
+                products[idx]["price"] = float(e["price"])
+    except Exception as e:
+        print(f"[Claude fill prices] {e}")
     return products
 
 
@@ -240,9 +185,9 @@ async def search_all_products(query: str = Query(...)):
             print(f"[Tavily] {e}")
 
     DEFAULT_FLOOR = 12.99
-    scraper_task = _enrich_with_scraper(amazon_products) if amazon_products else asyncio.sleep(0, result=[])
+    fill_task = _claude_fill_missing_prices(amazon_products) if amazon_products else asyncio.sleep(0, result=[])
     claude_task = _claude_generate_other_retailers(query, DEFAULT_FLOOR)
-    amazon_products, other_products = await asyncio.gather(scraper_task, claude_task)
+    amazon_products, other_products = await asyncio.gather(fill_task, claude_task)
 
     amazon_prices = [p["price"] for p in amazon_products if p.get("price", 0) > 0]
     min_price = min(amazon_prices) if amazon_prices else DEFAULT_FLOOR
