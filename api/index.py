@@ -72,34 +72,73 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
     return products
 
 
-async def _claude_fill_missing_prices(products: list[dict]) -> list[dict]:
-    """Use Claude to estimate prices for Amazon products Tavily didn't extract a price for."""
-    missing = [(i, p) for i, p in enumerate(products) if not p.get("price") or p["price"] <= 0]
-    if not missing or not ANTHROPIC_API_KEY:
-        return products
+def _extract_asin(url: str) -> str | None:
+    match = re.search(r"/(?:dp|gp/product)/([A-Z0-9]{10})", url)
+    return match.group(1) if match else None
 
-    items = [{"index": i, "name": p["name"], "retailer": p.get("source", "amazon")} for i, p in missing]
+
+async def _scrape_amazon_price(asin: str) -> dict | None:
+    """Call the /api/amazon-price JS function running on the same Vercel deployment."""
+    vercel_url = os.getenv("VERCEL_URL", "")
+    if not vercel_url:
+        return None
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            messages=[{"role": "user", "content": f"""Estimate realistic current retail prices for these FSA-eligible products. Return ONLY JSON:
-[{{"index": 0, "price": 12.99}}]
-
-Products: {json.dumps(items)}"""}],
-        )
-        raw = msg.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        for e in json.loads(raw.strip()):
-            idx = e.get("index")
-            if idx is not None and e.get("price"):
-                products[idx]["price"] = float(e["price"])
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(f"https://{vercel_url}/api/amazon-price?asin={asin}")
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("price"):
+                    return data
     except Exception as e:
-        print(f"[Claude fill prices] {e}")
+        print(f"[Amazon price JS] {e}")
+    return None
+
+
+async def _enrich_amazon_prices(products: list[dict]) -> list[dict]:
+    tasks, indices = [], []
+    for i, p in enumerate(products):
+        if p.get("source") == "amazon":
+            asin = _extract_asin(p.get("url", ""))
+            if asin:
+                tasks.append(_scrape_amazon_price(asin))
+                indices.append(i)
+
+    if tasks:
+        results = await asyncio.gather(*tasks)
+        for i, data in zip(indices, results):
+            if data:
+                products[i]["price"] = data.get("price") or products[i].get("price", 0)
+                products[i]["before_price"] = data.get("beforePrice", 0)
+                products[i]["discounted"] = bool(data.get("beforePrice"))
+                if data.get("image"):
+                    products[i]["main_image"] = data["image"]
+                if data.get("rating"):
+                    products[i]["rating"] = data["rating"]
+                products[i]["fsa_confirmed"] = True
+
+    # Claude fills in any still-missing prices
+    missing = [(i, p) for i, p in enumerate(products) if not p.get("price") or p["price"] <= 0]
+    if missing and ANTHROPIC_API_KEY:
+        items = [{"index": i, "name": p["name"]} for i, p in missing]
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=256,
+                messages=[{"role": "user", "content": f"Estimate realistic Amazon prices for these FSA products. Return ONLY JSON: [{{\"index\":0,\"price\":12.99}}]\n\n{json.dumps(items)}"}],
+            )
+            raw = msg.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"):
+                    raw = raw[4:]
+            for e in json.loads(raw.strip()):
+                idx = e.get("index")
+                if idx is not None and e.get("price"):
+                    products[idx]["price"] = float(e["price"])
+        except Exception as e:
+            print(f"[Claude fill prices] {e}")
+
     return products
 
 
@@ -185,9 +224,9 @@ async def search_all_products(query: str = Query(...)):
             print(f"[Tavily] {e}")
 
     DEFAULT_FLOOR = 12.99
-    fill_task = _claude_fill_missing_prices(amazon_products) if amazon_products else asyncio.sleep(0, result=[])
+    enrich_task = _enrich_amazon_prices(amazon_products) if amazon_products else asyncio.sleep(0, result=[])
     claude_task = _claude_generate_other_retailers(query, DEFAULT_FLOOR)
-    amazon_products, other_products = await asyncio.gather(fill_task, claude_task)
+    amazon_products, other_products = await asyncio.gather(enrich_task, claude_task)
 
     amazon_prices = [p["price"] for p in amazon_products if p.get("price", 0) > 0]
     min_price = min(amazon_prices) if amazon_prices else DEFAULT_FLOOR
