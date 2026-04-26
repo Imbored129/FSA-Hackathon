@@ -400,71 +400,103 @@ Products: {json.dumps(names)}"""}],
     return products
 
 
-async def _claude_generate_other_retailers(query: str, min_amazon_price: float) -> list[dict]:
-    """Ask Claude to generate realistic FSA product listings for non-Amazon retailers."""
-    if not ANTHROPIC_API_KEY:
-        return []
+RETAILER_SEARCH_URLS = {
+    "walmart":   lambda q: f"https://www.walmart.com/search?q={q.replace(' ', '+')}+FSA+eligible",
+    "walgreens": lambda q: f"https://www.walgreens.com/search/results.jsp?Ntt={q.replace(' ', '+')}",
+    "cvs":       lambda q: f"https://www.cvs.com/search?searchTerm={q.replace(' ', '+')}",
+    "fsastore":  lambda q: f"https://fsastore.com/search#q={q.replace(' ', '+')}",
+}
 
-    w_lo  = round(min_amazon_price * 1.05, 2)
-    w_hi  = round(min_amazon_price * 1.22, 2)
-    cv_lo = round(min_amazon_price * 1.12, 2)
-    cv_hi = round(min_amazon_price * 1.35, 2)
-    fs_lo = round(min_amazon_price * 1.08, 2)
-    fs_hi = round(min_amazon_price * 1.28, 2)
+RETAILER_DOMAINS = {
+    "walmart": "walmart.com",
+    "walgreens": "walgreens.com",
+    "cvs": "cvs.com",
+    "fsastore": "fsastore.com",
+}
 
-    prompt = f"""Generate realistic FSA-eligible product listings for the query: "{query}"
 
-Retailers: walmart, walgreens, cvs, fsastore (2-3 products each, 10 total max)
-
-Price rules (Amazon cheapest is ${min_amazon_price:.2f} — others must cost MORE):
-- walmart:   ${w_lo:.2f} – ${w_hi:.2f}
-- walgreens: ${cv_lo:.2f} – ${cv_hi:.2f}
-- cvs:       ${cv_lo:.2f} – ${cv_hi:.2f}
-- fsastore:  ${fs_lo:.2f} – ${fs_hi:.2f}
-
-Return ONLY a valid JSON array. Each object must have these exact keys:
-[
-  {{
-    "name": "Equate Loratadine 10mg 365ct",
-    "price": {w_lo:.2f},
-    "source": "walmart",
-    "url": "https://www.walmart.com/ip/equate-loratadine-10mg-365ct/887654321",
-    "rating": 4.5,
-    "fsa_confirmed": true
-  }}
-]
-
-Rules:
-- Use real brand/generic names appropriate for "{query}"
-- Only include genuinely FSA-eligible products
-- Walmart URLs: walmart.com/ip/slug/9-digit-number
-- Walgreens URLs: walgreens.com/store/c/slug/ID=prod123456
-- CVS URLs: cvs.com/shop/slug/prodid=123456
-- FSA Store URLs: fsastore.com/products/slug
-- rating 4.0–4.9, fsa_confirmed always true
-- NO explanation, ONLY the JSON array"""
-
+async def _tavily_search_retailer(query: str, retailer: str) -> list[dict]:
+    domain = RETAILER_DOMAINS[retailer]
     try:
-        client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=2048,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = msg.content[0].text.strip()
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
-        products = json.loads(raw.strip())
-        # Enforce price floor
-        for p in products:
-            if p.get("price", 0) < min_amazon_price:
-                p["price"] = round(min_amazon_price * 1.05, 2)
-        return products
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await client.post(
+                TAVILY_SEARCH_URL,
+                json={
+                    "query": f"FSA eligible {query} site:{domain}",
+                    "search_depth": "basic",
+                    "max_results": 3,
+                    "include_domains": [domain],
+                },
+                headers={"Content-Type": "application/json", "Authorization": f"Bearer {TAVILY_API_KEY}"},
+            )
+            if resp.status_code == 200:
+                products = []
+                for r in resp.json().get("results", []):
+                    url = r.get("url", "")
+                    title = r.get("title", "")
+                    content = r.get("content", "")
+                    if not title or not url:
+                        continue
+                    price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
+                    price = float(price_match.group(1)) if price_match else 0
+                    products.append({"name": title, "url": url, "price": price, "source": retailer, "fsa_confirmed": True})
+                return products
     except Exception as exc:
-        print(f"[Claude generate] Failed: {exc}")
-        return []
+        print(f"[Tavily {retailer}] {exc}")
+    return []
+
+
+async def _get_other_retailer_products(query: str, min_price: float) -> list[dict]:
+    retailers = ["walmart", "walgreens", "cvs", "fsastore"]
+
+    if TAVILY_API_KEY:
+        results = await asyncio.gather(*[_tavily_search_retailer(query, r) for r in retailers])
+    else:
+        results = [[] for _ in retailers]
+
+    all_products = []
+    for retailer, found in zip(retailers, results):
+        if found:
+            all_products.extend(found)
+        else:
+            all_products.append({
+                "name": f"{query.title()} — {retailer.title()} FSA Results",
+                "url": RETAILER_SEARCH_URLS[retailer](query),
+                "price": 0,
+                "source": retailer,
+                "fsa_confirmed": True,
+                "rating": 4.3,
+            })
+
+    missing = [(i, p) for i, p in enumerate(all_products) if not p.get("price")]
+    if missing and ANTHROPIC_API_KEY:
+        w_lo = round(min_price * 1.05, 2); cv_lo = round(min_price * 1.12, 2)
+        items = [{"index": i, "name": p["name"], "retailer": p["source"],
+                  "min_price": w_lo if p["source"] == "walmart" else cv_lo} for i, p in missing]
+        try:
+            client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+            msg = client.messages.create(
+                model="claude-haiku-4-5-20251001",
+                max_tokens=512,
+                messages=[{"role": "user", "content": f"""Estimate realistic FSA product prices at each retailer. Each price must be AT LEAST the min_price shown. Return ONLY JSON:
+[{{"index":0,"price":13.99}}]
+
+Products: {json.dumps(items)}"""}],
+            )
+            raw = msg.content[0].text.strip()
+            if raw.startswith("```"):
+                raw = raw.split("```")[1]
+                if raw.startswith("json"): raw = raw[4:]
+            for e in json.loads(raw.strip()):
+                idx = e.get("index")
+                if idx is not None and e.get("price"):
+                    all_products[idx]["price"] = max(float(e["price"]), min_price * 1.05)
+        except Exception as exc:
+            print(f"[Claude prices] {exc}")
+            for i, p in missing:
+                p["price"] = round(min_price * 1.10, 2)
+
+    return all_products
 
 
 @app.get("/")
@@ -503,14 +535,14 @@ async def search_all_products(query: str = Query(..., description="FSA product s
         except Exception as exc:
             print(f"[Tavily] Amazon search failed: {exc}")
 
-    # ── 2. Scraper + Claude generate run in parallel ───────────────────────
+    # ── 2. Amazon scraper + other retailer search run in parallel ─────────
     DEFAULT_FLOOR = 12.99
     scraper_task = _enrich_with_scraper(amazon_products) if amazon_products else asyncio.sleep(0, result=[])
-    claude_task  = _claude_generate_other_retailers(query, DEFAULT_FLOOR)
+    other_task = _get_other_retailer_products(query, DEFAULT_FLOOR)
 
-    amazon_products, other_products = await asyncio.gather(scraper_task, claude_task)
+    amazon_products, other_products = await asyncio.gather(scraper_task, other_task)
 
-    # ── 3. Enforce real price floor now that we have scraped prices ────────
+    # ── 3. Enforce real price floor ────────────────────────────────────────
     amazon_prices = [p["price"] for p in amazon_products if p.get("price", 0) > 0]
     min_amazon_price = min(amazon_prices) if amazon_prices else DEFAULT_FLOOR
 
