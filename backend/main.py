@@ -415,16 +415,25 @@ RETAILER_DOMAINS = {
 }
 
 
+PRODUCT_URL_PATTERNS = {
+    "walmart":   lambda url: "/ip/" in url,
+    "walgreens": lambda url: "/store/product/" in url or "/store/c/" in url,
+    "cvs":       lambda url: "/shop/" in url and ("prodid" in url or "/product/" in url),
+    "fsastore":  lambda url: "/products/" in url or "/p/" in url,
+}
+
+
 async def _tavily_search_retailer(query: str, retailer: str) -> list[dict]:
     domain = RETAILER_DOMAINS[retailer]
+    is_product_url = PRODUCT_URL_PATTERNS.get(retailer, lambda url: True)
     try:
         async with httpx.AsyncClient(timeout=8.0) as client:
             resp = await client.post(
                 TAVILY_SEARCH_URL,
                 json={
-                    "query": f"FSA eligible {query} site:{domain}",
+                    "query": f'"{query}" FSA eligible buy site:{domain}',
                     "search_depth": "basic",
-                    "max_results": 3,
+                    "max_results": 5,
                     "include_domains": [domain],
                 },
                 headers={"Content-Type": "application/json", "Authorization": f"Bearer {TAVILY_API_KEY}"},
@@ -435,7 +444,7 @@ async def _tavily_search_retailer(query: str, retailer: str) -> list[dict]:
                     url = r.get("url", "")
                     title = r.get("title", "")
                     content = r.get("content", "")
-                    if not title or not url:
+                    if not title or not url or not is_product_url(url):
                         continue
                     price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
                     price = float(price_match.group(1)) if price_match else 0
