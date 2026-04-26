@@ -40,7 +40,8 @@ const INITIAL_USERS = {
   }
 };
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8001';
+const IS_LOCAL = typeof window !== 'undefined' && window.location.hostname === 'localhost';
+const API_BASE = import.meta.env.VITE_API_BASE ?? (IS_LOCAL ? 'http://localhost:8001' : '');
 const CATEGORIES = ['allergy', 'bandages', 'contact lenses', 'pain relief', 'eye drops'];
 
 const RETAILER_CONFIG = {
