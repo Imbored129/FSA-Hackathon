@@ -134,7 +134,7 @@ function Login({ usersData, onLogin }) {
   return (
     <div style={styles.loginContainer}>
       <div style={styles.loginCard}>
-        <h2 style={{ marginTop: 0, color: '#1a73e8' }}>FSA Smart App</h2>
+        <h2 style={{ marginTop: 0, color: '#1a73e8' }}>FSAwise</h2>
         <p style={{ color: '#64748b' }}>Sign in to access your FSA dashboard</p>
         <form onSubmit={handleLogin} style={{ display: 'flex', flexDirection: 'column', gap: 15 }}>
           <input
@@ -167,7 +167,7 @@ function Sidebar({ activeTab, setActiveTab, onLogout }) {
   ];
   return (
     <div style={styles.sidebar}>
-      <h2 style={styles.sidebarTitle}>⚕️ FSA Compass</h2>
+      <h2 style={styles.sidebarTitle}>⚕️ FSAwise</h2>
       <div style={styles.navMenu}>
         {tabs.map(tab => (
           <button key={tab.id} onClick={() => setActiveTab(tab.id)}
@@ -478,21 +478,30 @@ function UploadTransactions({ addTransaction }) {
   const [previews, setPreviews] = useState(null);
   const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
+  const [dragging, setDragging] = useState(false);
 
-  const handleFileChange = (e) => { setFile(e.target.files[0]); setPreviews(null); setError(null); setSuccess(false); };
-
-  const handleUpload = async (e) => {
-    e.preventDefault();
-    if (!file) return;
-    setParsing(true); setError(null);
+  const parseFile = async (f) => {
+    if (!f) return;
+    setFile(f); setPreviews(null); setError(null); setSuccess(false);
+    setParsing(true);
     const formData = new FormData();
-    formData.append('file', file);
+    formData.append('file', f);
     try {
       const resp = await axios.post(`${API_BASE}/api/parse-receipt`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
       setPreviews(Array.isArray(resp.data) ? resp.data : [resp.data]);
     } catch (err) {
       setError(err.response?.data?.detail || 'Failed to parse file. Supported: JPG, PNG, WEBP, XLSX.');
     } finally { setParsing(false); }
+  };
+
+  const handleFileChange = (e) => parseFile(e.target.files[0]);
+
+  const handleDragOver = (e) => { e.preventDefault(); setDragging(true); };
+  const handleDragLeave = (e) => { e.preventDefault(); setDragging(false); };
+  const handleDrop = (e) => {
+    e.preventDefault(); setDragging(false);
+    const dropped = e.dataTransfer.files[0];
+    if (dropped) parseFile(dropped);
   };
 
   const handleConfirmAll = () => {
@@ -508,15 +517,33 @@ function UploadTransactions({ addTransaction }) {
       {success && <div style={{ padding: 12, background: '#dcfce7', color: '#166534', borderRadius: 8, marginBottom: 20 }}>✅ Transaction(s) added successfully.</div>}
 
       {!previews && (
-        <form onSubmit={handleUpload}>
-          <div style={{ border: '2px dashed #cbd5e1', padding: 40, borderRadius: 12, textAlign: 'center', marginBottom: 20 }}>
-            <input type="file" accept="image/*,.xlsx" onChange={handleFileChange} style={{ display: 'block', margin: '0 auto' }} />
-            <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: 12, marginBottom: 0 }}>Supported: JPG, PNG, WEBP, XLSX</p>
+        <form onSubmit={(e) => { e.preventDefault(); parseFile(file); }}>
+          <div
+            onDragOver={handleDragOver}
+            onDragLeave={handleDragLeave}
+            onDrop={handleDrop}
+            style={{
+              border: `2px dashed ${dragging ? '#3b82f6' : '#cbd5e1'}`,
+              background: dragging ? '#eff6ff' : 'transparent',
+              padding: 40, borderRadius: 12, textAlign: 'center', marginBottom: 20,
+              transition: 'all 0.2s ease', cursor: 'pointer',
+            }}
+          >
+            {parsing
+              ? <p style={{ color: '#3b82f6', fontWeight: 600, margin: 0 }}>🤖 Analyzing with Claude AI...</p>
+              : dragging
+                ? <p style={{ color: '#3b82f6', fontWeight: 600, margin: 0 }}>Drop to analyze instantly</p>
+                : <>
+                    <p style={{ color: '#64748b', fontWeight: 600, margin: '0 0 8px' }}>Drag &amp; drop a file here, or click to browse</p>
+                    <input type="file" accept="image/*,.xlsx" onChange={handleFileChange} style={{ display: 'block', margin: '0 auto' }} />
+                    <p style={{ color: '#94a3b8', fontSize: '0.85rem', marginTop: 12, marginBottom: 0 }}>Supported: JPG, PNG, WEBP, XLSX</p>
+                  </>
+            }
           </div>
           {error && <div style={{ color: '#b91c1c', marginBottom: 12, fontSize: '0.9rem' }}>⚠️ {error}</div>}
-          <button type="submit" disabled={!file || parsing} style={{ ...styles.primaryButton, opacity: (!file || parsing) ? 0.5 : 1 }}>
-            {parsing ? '🤖 Analyzing...' : '📤 Parse File'}
-          </button>
+          {!parsing && <button type="submit" disabled={!file || parsing} style={{ ...styles.primaryButton, opacity: (!file || parsing) ? 0.5 : 1 }}>
+            📤 Parse File
+          </button>}
         </form>
       )}
 
