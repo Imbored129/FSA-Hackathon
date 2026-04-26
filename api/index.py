@@ -78,23 +78,6 @@ def _extract_asin(url: str) -> str | None:
 
 
 async def _scrape_amazon_price(asin: str) -> dict | None:
-    """Call the /api/amazon-price JS function running on the same Vercel deployment."""
-    vercel_url = os.getenv("VERCEL_URL", "")
-    if not vercel_url:
-        return None
-    try:
-        async with httpx.AsyncClient(timeout=12.0) as client:
-            resp = await client.get(f"https://{vercel_url}/api/amazon-price?asin={asin}")
-            if resp.status_code == 200:
-                data = resp.json()
-                if data.get("price"):
-                    return data
-    except Exception as e:
-        print(f"[Amazon price JS] {e}")
-    return None
-
-
-async def _scrape_amazon_price(asin: str) -> dict | None:
     """Call the /api/amazon-price JS serverless function on the same Vercel deployment."""
     vercel_url = os.getenv("VERCEL_URL", "")
     if not vercel_url:
