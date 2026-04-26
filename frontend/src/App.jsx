@@ -31,10 +31,11 @@ const API_BASE = 'http://localhost:8001';
 const CATEGORIES = ['allergy', 'bandages', 'contact lenses', 'pain relief', 'eye drops'];
 
 const RETAILER_CONFIG = {
-  amazon: { label: 'Amazon', color: '#FF9900', bg: '#FFF8EE', border: '#FFE0AA', logo: '📦', badge: 'FSA Filter Applied ✓' },
-  walmart: { label: 'Walmart', color: '#0071CE', bg: '#EEF6FF', border: '#B3D7F5', logo: '🏪', badge: 'FSA Eligible ✓' },
+  amazon:   { label: 'Amazon',    color: '#FF9900', bg: '#FFF8EE', border: '#FFE0AA', logo: '📦', badge: 'FSA Eligible ✓' },
+  walmart:  { label: 'Walmart',   color: '#0071CE', bg: '#EEF6FF', border: '#B3D7F5', logo: '🏪', badge: 'FSA Eligible ✓' },
+  walgreens:{ label: 'Walgreens', color: '#E31837', bg: '#FFF0F3', border: '#FFAAB8', logo: '💊', badge: 'FSA Eligible ✓' },
+  cvs:      { label: 'CVS',       color: '#CC0000', bg: '#FCE6E6', border: '#EB9999', logo: '❤️',  badge: 'FSA Eligible ✓' },
   fsastore: { label: 'FSA Store', color: '#00B140', bg: '#E6F8EB', border: '#99E1B3', logo: '🛒', badge: '100% FSA Eligible ✓' },
-  cvs: { label: 'CVS', color: '#CC0000', bg: '#FCE6E6', border: '#EB9999', logo: '❤️', badge: 'FSA Eligible ✓' }
 };
 
 const CATEGORY_ICONS = { allergy: '💊', bandages: '🩹', 'contact lenses': '👁️', 'pain relief': '💊', 'eye drops': '💧' };
@@ -44,22 +45,31 @@ const CATEGORY_ICONS = { allergy: '💊', bandages: '🩹', 'contact lenses': '�
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState(null);
+  const [transactions, setTransactions] = useState([]);
   const [activeTab, setActiveTab] = useState('dashboard');
 
+  const handleLogin = (user) => {
+    setCurrentUser(user);
+    setTransactions(user.transactions || []);
+  };
+
+  const addTransaction = (tx) => setTransactions(prev => [tx, ...prev]);
+  const removeTransaction = (id) => setTransactions(prev => prev.filter(t => t.id !== id));
+
   if (!currentUser) {
-    return <Login onLogin={setCurrentUser} />;
+    return <Login onLogin={handleLogin} />;
   }
 
   return (
     <div style={styles.appContainer}>
-      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} onLogout={() => setCurrentUser(null)} />
+      <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} onLogout={() => { setCurrentUser(null); setTransactions([]); }} />
       <div style={styles.mainContent}>
         <Header user={currentUser} activeTab={activeTab} />
         <div style={styles.contentArea}>
-          {activeTab === 'dashboard' && <Dashboard user={currentUser} />}
+          {activeTab === 'dashboard' && <Dashboard user={currentUser} transactions={transactions} />}
           {activeTab === 'profile' && <Profile user={currentUser} />}
-          {activeTab === 'upload' && <DataUpload />}
-          {activeTab === 'transactions' && <TransactionHistory user={currentUser} />}
+          {activeTab === 'upload' && <UploadTransactions addTransaction={addTransaction} />}
+          {activeTab === 'transactions' && <TransactionHistory transactions={transactions} removeTransaction={removeTransaction} />}
           {activeTab === 'search' && <ProductSearch />}
         </div>
       </div>
@@ -109,7 +119,7 @@ function Sidebar({ activeTab, setActiveTab, onLogout }) {
   const tabs = [
     { id: 'dashboard', label: '📊 Dashboard' },
     { id: 'transactions', label: '💳 Transactions' },
-    { id: 'upload', label: '📤 Upload Receipt' },
+    { id: 'upload', label: '📤 Upload Transactions' },
     { id: 'search', label: '🔍 Shop FSA' },
     { id: 'profile', label: '👤 Profile' },
   ];
@@ -139,7 +149,7 @@ function Sidebar({ activeTab, setActiveTab, onLogout }) {
 function Header({ user, activeTab }) {
   const tabTitles = {
     dashboard: 'Overview', transactions: 'Transaction History', 
-    upload: 'Upload Documents', search: 'FSA Product Finder', profile: 'My Profile'
+    upload: 'Upload Transactions', search: 'FSA Product Finder', profile: 'My Profile'
   };
 
   return (
@@ -153,7 +163,7 @@ function Header({ user, activeTab }) {
   );
 }
 
-function Dashboard({ user }) {
+function Dashboard({ user, transactions }) {
   return (
     <div>
       <div style={styles.statsGrid}>
@@ -163,30 +173,31 @@ function Dashboard({ user }) {
         </div>
         <div style={styles.statCard}>
           <div style={styles.statLabel}>Total Spent (YTD)</div>
-          <div style={styles.statValue}>${(user.transactions.reduce((acc, t) => acc + t.amount, 0)).toFixed(2)}</div>
+          <div style={styles.statValue}>${(transactions.reduce((acc, t) => acc + (t.amount || 0), 0)).toFixed(2)}</div>
         </div>
         <div style={styles.statCard}>
           <div style={styles.statLabel}>Pending Claims</div>
           <div style={{...styles.statValue, color: '#f59e0b'}}>
-            {user.transactions.filter(t => t.status !== 'Approved').length}
+            {transactions.filter(t => t.status !== 'Approved').length}
           </div>
         </div>
       </div>
-      
+
       <div style={{...styles.card, marginTop: 24}}>
         <h3 style={{marginTop: 0}}>Recent Activity</h3>
-        {user.transactions.slice(0,2).map(t => (
+        {transactions.slice(0, 2).map(t => (
           <div key={t.id} style={styles.transactionRow}>
             <div>
               <div style={{fontWeight: 600}}>{t.merchant}</div>
               <div style={{fontSize: '0.85rem', color: '#64748b'}}>{t.date}</div>
             </div>
             <div style={{textAlign: 'right'}}>
-              <div style={{fontWeight: 700}}>${t.amount.toFixed(2)}</div>
+              <div style={{fontWeight: 700}}>${(t.amount || 0).toFixed(2)}</div>
               <span style={{fontSize: '0.8rem', color: t.status === 'Approved' ? '#10b981' : '#f59e0b'}}>{t.status}</span>
             </div>
           </div>
         ))}
+        {transactions.length === 0 && <p style={{color: '#94a3b8', margin: 0}}>No transactions yet.</p>}
       </div>
     </div>
   );
@@ -218,58 +229,130 @@ function Profile({ user }) {
   );
 }
 
-function DataUpload() {
+function UploadTransactions({ addTransaction }) {
   const [file, setFile] = useState(null);
-  const [uploading, setUploading] = useState(false);
+  const [parsing, setParsing] = useState(false);
+  const [previews, setPreviews] = useState(null);
+  const [error, setError] = useState(null);
   const [success, setSuccess] = useState(false);
 
-  const handleUpload = (e) => {
+  const handleFileChange = (e) => {
+    setFile(e.target.files[0]);
+    setPreviews(null);
+    setError(null);
+    setSuccess(false);
+  };
+
+  const handleUpload = async (e) => {
     e.preventDefault();
     if (!file) return;
-    setUploading(true);
-    setTimeout(() => {
-      setUploading(false);
-      setSuccess(true);
-      setFile(null);
-    }, 1500);
+    setParsing(true);
+    setError(null);
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const resp = await axios.post(`${API_BASE}/api/parse-receipt`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      const data = Array.isArray(resp.data) ? resp.data : [resp.data];
+      setPreviews(data);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to parse file. Supported: JPG, PNG, WEBP, XLSX.');
+    } finally {
+      setParsing(false);
+    }
+  };
+
+  const handleConfirmAll = () => {
+    previews.forEach(tx => addTransaction(tx));
+    setPreviews(null);
+    setFile(null);
+    setSuccess(true);
   };
 
   return (
     <div style={styles.card}>
-      <h3 style={{marginTop: 0}}>Upload Receipt or Claim</h3>
-      <p style={{color: '#64748b', marginBottom: 20}}>Upload your itemized receipts or EOBs for reimbursement or to clear a pending transaction.</p>
-      
+      <h3 style={{marginTop: 0}}>Upload Transaction Receipt</h3>
+      <p style={{color: '#64748b', marginBottom: 20}}>
+        Upload a receipt image or Excel spreadsheet — Claude AI extracts the transaction details automatically.
+      </p>
+
       {success && (
         <div style={{padding: 12, background: '#dcfce7', color: '#166534', borderRadius: 8, marginBottom: 20}}>
-          ✅ Document uploaded successfully. It is now pending review.
+          ✅ Transaction(s) added successfully.
         </div>
       )}
 
-      <form onSubmit={handleUpload}>
-        <div style={{border: '2px dashed #cbd5e1', padding: 40, borderRadius: 12, textAlign: 'center', marginBottom: 20}}>
-          <input 
-            type="file" 
-            accept="image/*,.pdf" 
-            onChange={(e) => { setFile(e.target.files[0]); setSuccess(false); }}
-            style={{display: 'block', margin: '0 auto'}}
-          />
+      {!previews && (
+        <form onSubmit={handleUpload}>
+          <div style={{border: '2px dashed #cbd5e1', padding: 40, borderRadius: 12, textAlign: 'center', marginBottom: 20}}>
+            <input type="file" accept="image/*,.xlsx" onChange={handleFileChange} style={{display: 'block', margin: '0 auto'}} />
+            <p style={{color: '#94a3b8', fontSize: '0.85rem', marginTop: 12, marginBottom: 0}}>Supported: JPG, PNG, WEBP, XLSX</p>
+          </div>
+          {error && <div style={{color: '#b91c1c', marginBottom: 12, fontSize: '0.9rem'}}>⚠️ {error}</div>}
+          <button type="submit" disabled={!file || parsing} style={{...styles.primaryButton, opacity: (!file || parsing) ? 0.5 : 1}}>
+            {parsing ? '🤖 Analyzing...' : '📤 Parse File'}
+          </button>
+        </form>
+      )}
+
+      {previews && (
+        <div>
+          <h4 style={{marginTop: 0, color: '#1e293b'}}>
+            {previews.length} transaction{previews.length !== 1 ? 's' : ''} extracted — confirm to add
+          </h4>
+          <div style={{display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 20}}>
+            {previews.map((tx, i) => (
+              <div key={i} style={{border: '1px solid #e2e8f0', borderRadius: 10, padding: '14px 18px', display: 'grid', gridTemplateColumns: '2fr 1fr 1fr 2fr', gap: 16, alignItems: 'center'}}>
+                <div>
+                  <label style={styles.label}>Merchant</label>
+                  <div style={styles.infoText}>{tx.merchant}</div>
+                </div>
+                <div>
+                  <label style={styles.label}>Amount</label>
+                  <div style={{...styles.infoText, fontWeight: 700, color: '#1a73e8'}}>${(tx.amount || 0).toFixed(2)}</div>
+                </div>
+                <div>
+                  <label style={styles.label}>Date</label>
+                  <div style={styles.infoText}>{tx.date}</div>
+                </div>
+                <div>
+                  <label style={styles.label}>Item</label>
+                  <div style={styles.infoText}>{tx.item}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{display: 'flex', gap: 12}}>
+            <button onClick={handleConfirmAll} style={styles.primaryButton}>
+              ✅ Add {previews.length !== 1 ? `All ${previews.length} Transactions` : 'Transaction'}
+            </button>
+            <button onClick={() => { setPreviews(null); setFile(null); }} style={{...styles.primaryButton, background: '#f1f5f9', color: '#64748b'}}>
+              Cancel
+            </button>
+          </div>
         </div>
-        <button 
-          type="submit" 
-          disabled={!file || uploading} 
-          style={{...styles.primaryButton, opacity: (!file || uploading) ? 0.5 : 1}}
-        >
-          {uploading ? 'Uploading...' : 'Submit Document'}
-        </button>
-      </form>
+      )}
     </div>
   );
 }
 
-function TransactionHistory({ user }) {
+function TransactionHistory({ transactions, removeTransaction }) {
+  const [confirmingId, setConfirmingId] = useState(null);
+
+  const handleRemoveClick = (id) => {
+    if (confirmingId === id) {
+      removeTransaction(id);
+      setConfirmingId(null);
+    } else {
+      setConfirmingId(id);
+    }
+  };
+
   return (
     <div style={styles.card}>
       <h3 style={{marginTop: 0}}>All Transactions</h3>
+      {transactions.length === 0 && <p style={{color: '#94a3b8'}}>No transactions yet. Upload a receipt to add one.</p>}
       <table style={{width: '100%', borderCollapse: 'collapse'}}>
         <thead>
           <tr style={{borderBottom: '2px solid #e2e8f0', textAlign: 'left', color: '#64748b'}}>
@@ -278,15 +361,16 @@ function TransactionHistory({ user }) {
             <th>Item</th>
             <th>Amount</th>
             <th>Status</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
-          {user.transactions.map(t => (
+          {transactions.map(t => (
             <tr key={t.id} style={{borderBottom: '1px solid #f1f5f9'}}>
               <td style={{padding: '16px 0'}}>{t.date}</td>
               <td style={{fontWeight: 600}}>{t.merchant}</td>
               <td>{t.item}</td>
-              <td style={{fontWeight: 700}}>${t.amount.toFixed(2)}</td>
+              <td style={{fontWeight: 700}}>${(t.amount || 0).toFixed(2)}</td>
               <td>
                 <span style={{
                   background: t.status === 'Approved' ? '#dcfce7' : '#fef3c7',
@@ -295,6 +379,23 @@ function TransactionHistory({ user }) {
                 }}>
                   {t.status}
                 </span>
+              </td>
+              <td style={{paddingLeft: 12}}>
+                {confirmingId === t.id ? (
+                  <div style={{display: 'flex', gap: 6, alignItems: 'center'}}>
+                    <span style={{fontSize: '0.8rem', color: '#b91c1c', fontWeight: 600, whiteSpace: 'nowrap'}}>Remove?</span>
+                    <button onClick={() => handleRemoveClick(t.id)} style={{background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontWeight: 700, fontSize: '0.8rem'}}>
+                      Yes
+                    </button>
+                    <button onClick={() => setConfirmingId(null)} style={{background: '#f1f5f9', color: '#64748b', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: '0.8rem'}}>
+                      No
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => handleRemoveClick(t.id)} style={{background: '#fee2e2', color: '#b91c1c', border: 'none', borderRadius: 6, padding: '4px 10px', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 600}}>
+                    Remove
+                  </button>
+                )}
               </td>
             </tr>
           ))}
@@ -326,35 +427,14 @@ function ProductSearch() {
     setAnswer(null);
 
     try {
-      // Search all 4 retailers simultaneously
-      const [amazonResp, walmartResp, fsaStoreResp, cvsResp] = await Promise.all([
-        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'amazon' } }).catch(e => ({ data: { products: [] } })),
-        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'walmart' } }).catch(e => ({ data: { products: [] } })),
-        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'fsastore' } }).catch(e => ({ data: { products: [] } })),
-        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'cvs' } }).catch(e => ({ data: { products: [] } }))
-      ]);
-
-      const amazonProducts = (amazonResp.data.products || []).map(p => ({ ...p, retailer: 'amazon' }));
-      const walmartProducts = (walmartResp.data.products || []).map(p => ({ ...p, retailer: 'walmart' }));
-      const fsaStoreProducts = (fsaStoreResp.data.products || []).map(p => ({ ...p, retailer: 'fsastore' }));
-      const cvsProducts = (cvsResp.data.products || []).map(p => ({ ...p, retailer: 'cvs' }));
-
-      let combined = [...amazonProducts, ...walmartProducts, ...fsaStoreProducts, ...cvsProducts];
-
-      // Sort by price (cheapest first)
-      combined.sort((a, b) => {
-        const priceA = a.price ?? 999999;
-        const priceB = b.price ?? 999999;
-        return priceA - priceB;
-      });
-
-      setProducts(combined);
-      // Use answer from whichever one provided it (or concatenate)
-      setAnswer(amazonResp.data.answer || walmartResp.data.answer || fsaStoreResp.data.answer || cvsResp.data.answer);
-      setUsedTavily(amazonResp.data.used_tavily || walmartResp.data.used_tavily || fsaStoreResp.data.used_tavily || cvsResp.data.used_tavily);
+      const resp = await axios.get(`${API_BASE}/api/search/all`, { params: { query: q }, timeout: 45000 });
+      const data = resp.data;
+      setProducts(data.products || []);
+      setAnswer(data.answer);
+      setUsedTavily(data.used_tavily);
     } catch (err) {
       console.error('Search failed:', err);
-      setError('Search failed. Make sure the backend is running on port 8000.');
+      setError('Could not reach the backend. Make sure it is running on port 8001.');
       setProducts([]);
     } finally {
       setLoading(false);
@@ -365,13 +445,6 @@ function ProductSearch() {
 
   return (
     <div>
-      <div style={{ background: 'linear-gradient(135deg, #1a73e8 0%, #0d9488 100%)', padding: '22px 32px', color: 'white', borderRadius: 12, marginBottom: 20 }}>
-        <h2 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 800 }}>💊 FSA Product Finder</h2>
-        <p style={{ margin: '6px 0 0', opacity: 0.9, fontSize: '0.9rem' }}>
-          Search for FSA-eligible products across Amazon and Walmart — powered by Tavily AI Search.
-        </p>
-      </div>
-
       <div style={styles.card}>
         <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
           <input
@@ -405,7 +478,7 @@ function ProductSearch() {
       {products.length > 0 && !loading && (
         <div style={{ display: 'grid', gap: 12, marginTop: 20 }}>
           {products.map((p, i) => {
-            const rc = RETAILER_CONFIG[p.retailer];
+            const rc = RETAILER_CONFIG[p.source] || RETAILER_CONFIG[p.retailer] || RETAILER_CONFIG.amazon;
             return (
               <a 
                 key={i} 
