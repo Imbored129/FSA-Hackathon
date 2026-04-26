@@ -94,47 +94,46 @@ async def _scrape_amazon_price(asin: str) -> dict | None:
     return None
 
 
-async def _tavily_get_amazon_price(url: str, name: str) -> float | None:
-    """Fetch the real Amazon price for a product URL via a targeted Tavily search."""
-    if not TAVILY_API_KEY:
+async def _scrape_amazon_price(asin: str) -> dict | None:
+    """Call the /api/amazon-price JS serverless function on the same Vercel deployment."""
+    vercel_url = os.getenv("VERCEL_URL", "")
+    if not vercel_url:
         return None
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                TAVILY_SEARCH_URL,
-                json={
-                    "query": f"{name} price",
-                    "search_depth": "basic",
-                    "max_results": 3,
-                    "include_answer": True,
-                    "include_domains": ["amazon.com"],
-                },
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {TAVILY_API_KEY}"},
-            )
+        async with httpx.AsyncClient(timeout=12.0) as client:
+            resp = await client.get(f"https://{vercel_url}/api/amazon-price?asin={asin}")
             if resp.status_code == 200:
                 data = resp.json()
-                text = (data.get("answer") or "") + " ".join(r.get("content", "") for r in data.get("results", []))
-                match = re.search(r"\$\s*(\d+\.?\d{0,2})", text)
-                if match:
-                    return float(match.group(1))
+                if data.get("price"):
+                    return data
     except Exception as e:
-        print(f"[Tavily price] {e}")
+        print(f"[Amazon scraper] {e}")
     return None
 
 
 async def _enrich_amazon_prices(products: list[dict]) -> list[dict]:
-    # 1. Tavily price lookup in parallel for all Amazon products missing a real price
-    missing_price = [(i, p) for i, p in enumerate(products)
-                     if p.get("source") == "amazon" and not p.get("price")]
-    if missing_price and TAVILY_API_KEY:
-        tasks = [_tavily_get_amazon_price(p["url"], p["name"]) for _, p in missing_price]
-        prices = await asyncio.gather(*tasks)
-        for (i, _), price in zip(missing_price, prices):
-            if price:
-                products[i]["price"] = price
+    tasks, indices = [], []
+    for i, p in enumerate(products):
+        if p.get("source") == "amazon":
+            asin = _extract_asin(p.get("url", ""))
+            if asin:
+                tasks.append(_scrape_amazon_price(asin))
+                indices.append(i)
+
+    if tasks:
+        results = await asyncio.gather(*tasks)
+        for i, data in zip(indices, results):
+            if data:
+                products[i]["price"] = data.get("price") or products[i].get("price", 0)
+                products[i]["before_price"] = data.get("beforePrice", 0)
+                products[i]["discounted"] = bool(data.get("beforePrice"))
+                if data.get("image"):
+                    products[i]["main_image"] = data["image"]
+                if data.get("rating"):
+                    products[i]["rating"] = data["rating"]
                 products[i]["fsa_confirmed"] = True
 
-    # 2. Claude fills in any still-missing prices as fallback
+    # Claude fills in any still-missing prices as fallback
     still_missing = [(i, p) for i, p in enumerate(products)
                      if p.get("source") == "amazon" and not p.get("price")]
     if still_missing and ANTHROPIC_API_KEY:
