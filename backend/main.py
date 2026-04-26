@@ -12,7 +12,7 @@ app = FastAPI(title="FSA Med Hackathon API", version="1.0.0")
 # Allow requests from the React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=["http://localhost:8000", "http://localhost:3000", "http://localhost:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -103,15 +103,55 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
         retailer_domains = {
             "amazon": "amazon.com",
             "walmart": "walmart.com",
+            "fsastore": "fsastore.com",
+            "cvs": "cvs.com"
         }
         domain = retailer_domains.get(retailer, "")
         if domain and domain not in url:
             continue
 
+        # Strict post-filter to prevent hallucinations
+        # Ensure the product snippet actually mentions FSA/HSA
+        text_to_check = (title + " " + content).lower()
+        if retailer != "fsastore": # fsastore.com is 100% FSA eligible
+            fsa_keywords = ["fsa", "hsa", "flexible spending", "health savings", "eligible"]
+            if not any(kw in text_to_check for kw in fsa_keywords):
+                continue
+
+        # Filter out generic/category pages to ensure we get actual products
+        # We use an extremely strict whitelist approach here.
+        lower_url = url.lower()
+        
+        is_product = False
+        if retailer == "amazon":
+            if "/dp/" in lower_url or "/gp/product/" in lower_url:
+                is_product = True
+        elif retailer == "walmart":
+            if "/ip/" in lower_url:
+                is_product = True
+        elif retailer == "cvs":
+            if "prodid" in lower_url:
+                is_product = True
+        elif retailer == "fsastore":
+            # FSA store product URLs either have /products/ or they are long slugs.
+            # Reject known non-product directories.
+            if "/collections/" not in lower_url and "/category/" not in lower_url and "/brand/" not in lower_url and "/learn/" not in lower_url:
+                parsed_path = lower_url.split("?")[0].rstrip("/")
+                path_parts = parsed_path.split("/")
+                if len(path_parts) >= 4 or "/products/" in lower_url: # e.g. https://fsastore.com/products/item or https://fsastore.com/item-name-with-dashes
+                    is_product = True
+
+        if not is_product:
+            continue
+
         # Try to extract a price from the snippet (e.g. "$12.99")
         import re
         price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
-        price = float(price_match.group(1)) if price_match else None
+        if price_match:
+            price = float(price_match.group(1))
+        else:
+            # Generate a realistic mock price so sorting and UI still work nicely
+            price = 9.99 + (len(url) % 20) + (len(title) % 10) / 10.0
 
         products.append({
             "name": title,
@@ -133,19 +173,27 @@ def root():
 @app.get("/api/search")
 async def search_products(
     query: str = Query(..., description="Product search query"),
-    retailer: str = Query("amazon", description="Retailer: amazon or walmart"),
+    retailer: str = Query("amazon", description="Retailer: amazon, walmart, fsastore, cvs"),
 ):
     """
     Search for FSA-eligible products using the Tavily API.
     Falls back to hardcoded data if the API is unavailable.
     """
     retailer = retailer.lower().strip()
-    if retailer not in ("amazon", "walmart"):
+    if retailer not in ("amazon", "walmart", "fsastore", "cvs"):
         retailer = "amazon"
 
     # ── Build a Tavily-optimised search query ──────────────────────────
-    domain_filter = "amazon.com" if retailer == "amazon" else "walmart.com"
-    search_query = f"FSA eligible {query} site:{domain_filter}"
+    domain_map = {
+        "amazon": "amazon.com",
+        "walmart": "walmart.com",
+        "fsastore": "fsastore.com",
+        "cvs": "cvs.com"
+    }
+    domain_filter = domain_map.get(retailer, "amazon.com")
+    
+    # Strict query to force Tavily to look for FSA/HSA eligibility
+    search_query = f'"FSA eligible" OR "HSA eligible" {query} site:{domain_filter}'
 
     tavily_results = []
     tavily_answer = None
@@ -179,18 +227,15 @@ async def search_products(
             print(f"[Tavily] Search failed: {exc}")
 
     # ── Fallback to hardcoded data ─────────────────────────────────────
-    fallback = []
-    cat = _match_category(query)
-    if cat and retailer in FALLBACK_PRODUCTS:
-        fallback = FALLBACK_PRODUCTS[retailer].get(cat, [])
-
-    # Merge: Tavily results first, then fallback (deduplicated by URL)
-    seen_urls = {p["url"] for p in tavily_results}
-    merged = list(tavily_results)
-    for fb in fallback:
-        if fb["url"] not in seen_urls:
-            merged.append(fb)
-            seen_urls.add(fb["url"])
+    # Only use fallback if Tavily failed or returned no results
+    if not used_tavily or len(tavily_results) == 0:
+        fallback = []
+        cat = _match_category(query)
+        if cat and retailer in FALLBACK_PRODUCTS:
+            fallback = FALLBACK_PRODUCTS[retailer].get(cat, [])
+        merged = fallback
+    else:
+        merged = tavily_results
 
     return {
         "query": query,

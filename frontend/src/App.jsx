@@ -27,12 +27,14 @@ const MOCK_USERS = {
 };
 
 // --- EXISTING SEARCH APP CONSTANTS ---
-const API_BASE = 'http://localhost:8000';
+const API_BASE = 'http://localhost:8001';
 const CATEGORIES = ['allergy', 'bandages', 'contact lenses', 'pain relief', 'eye drops'];
 
 const RETAILER_CONFIG = {
   amazon: { label: 'Amazon', color: '#FF9900', bg: '#FFF8EE', border: '#FFE0AA', logo: '📦', badge: 'FSA Filter Applied ✓' },
-  walmart: { label: 'Walmart', color: '#0071CE', bg: '#EEF6FF', border: '#B3D7F5', logo: '🏪', badge: 'FSA Eligible ✓' }
+  walmart: { label: 'Walmart', color: '#0071CE', bg: '#EEF6FF', border: '#B3D7F5', logo: '🏪', badge: 'FSA Eligible ✓' },
+  fsastore: { label: 'FSA Store', color: '#00B140', bg: '#E6F8EB', border: '#99E1B3', logo: '🛒', badge: '100% FSA Eligible ✓' },
+  cvs: { label: 'CVS', color: '#CC0000', bg: '#FCE6E6', border: '#EB9999', logo: '❤️', badge: 'FSA Eligible ✓' }
 };
 
 const CATEGORY_ICONS = { allergy: '💊', bandages: '🩹', 'contact lenses': '👁️', 'pain relief': '💊', 'eye drops': '💧' };
@@ -324,16 +326,20 @@ function ProductSearch() {
     setAnswer(null);
 
     try {
-      // Search both retailers simultaneously
-      const [amazonResp, walmartResp] = await Promise.all([
+      // Search all 4 retailers simultaneously
+      const [amazonResp, walmartResp, fsaStoreResp, cvsResp] = await Promise.all([
         axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'amazon' } }).catch(e => ({ data: { products: [] } })),
-        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'walmart' } }).catch(e => ({ data: { products: [] } }))
+        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'walmart' } }).catch(e => ({ data: { products: [] } })),
+        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'fsastore' } }).catch(e => ({ data: { products: [] } })),
+        axios.get(`${API_BASE}/api/search`, { params: { query: q, retailer: 'cvs' } }).catch(e => ({ data: { products: [] } }))
       ]);
 
       const amazonProducts = (amazonResp.data.products || []).map(p => ({ ...p, retailer: 'amazon' }));
       const walmartProducts = (walmartResp.data.products || []).map(p => ({ ...p, retailer: 'walmart' }));
+      const fsaStoreProducts = (fsaStoreResp.data.products || []).map(p => ({ ...p, retailer: 'fsastore' }));
+      const cvsProducts = (cvsResp.data.products || []).map(p => ({ ...p, retailer: 'cvs' }));
 
-      let combined = [...amazonProducts, ...walmartProducts];
+      let combined = [...amazonProducts, ...walmartProducts, ...fsaStoreProducts, ...cvsProducts];
 
       // Sort by price (cheapest first)
       combined.sort((a, b) => {
@@ -344,8 +350,8 @@ function ProductSearch() {
 
       setProducts(combined);
       // Use answer from whichever one provided it (or concatenate)
-      setAnswer(amazonResp.data.answer || walmartResp.data.answer);
-      setUsedTavily(amazonResp.data.used_tavily || walmartResp.data.used_tavily);
+      setAnswer(amazonResp.data.answer || walmartResp.data.answer || fsaStoreResp.data.answer || cvsResp.data.answer);
+      setUsedTavily(amazonResp.data.used_tavily || walmartResp.data.used_tavily || fsaStoreResp.data.used_tavily || cvsResp.data.used_tavily);
     } catch (err) {
       console.error('Search failed:', err);
       setError('Search failed. Make sure the backend is running on port 8000.');
@@ -380,17 +386,7 @@ function ProductSearch() {
           </button>
         </div>
 
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-          {CATEGORIES.map(cat => (
-            <button key={cat} onClick={() => { setQuery(cat); handleSearch(cat); }}
-              style={{ 
-                padding: '5px 14px', borderRadius: 20, fontSize: '0.82rem', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 4,
-                background: query === cat ? '#dbeafe' : '#f1f5f9', color: query === cat ? '#1d4ed8' : '#64748b', border: `1.5px solid ${query === cat ? '#bfdbfe' : '#e2e8f0'}`
-              }}>
-              {CATEGORY_ICONS[cat]} {cat}
-            </button>
-          ))}
-        </div>
+
       </div>
 
       {error && <div style={{ background: '#fef2f2', color: '#b91c1c', padding: '12px 16px', borderRadius: 10, marginTop: 18 }}>⚠️ {error}</div>}
