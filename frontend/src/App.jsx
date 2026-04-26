@@ -685,7 +685,7 @@ function ProductSearch() {
       setAnswer(resp.data.answer);
     } catch (err) {
       console.error(err);
-      setError('Could not reach the backend. Make sure it is running on port 8001.');
+      setError('Could not reach the backend. ' + (import.meta.env.VITE_API_BASE ? 'Make sure it is running on port 8001.' : 'Check that the API is deployed correctly.'));
       setProducts([]);
     } finally { setLoading(false); }
   };
