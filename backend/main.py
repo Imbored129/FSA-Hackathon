@@ -445,19 +445,22 @@ async def _tavily_search_walmart(query: str) -> list[dict]:
 async def _claude_generate_retailers(query: str, min_price: float, retailers: list[str]) -> list[dict]:
     if not ANTHROPIC_API_KEY:
         return []
-    w_lo = round(min_price * 1.05, 2); cv_lo = round(min_price * 1.12, 2)
+    w_lo = round(min_price * 1.03, 2); w_hi = round(min_price * 1.12, 2)
+    cv_lo = round(min_price * 1.05, 2); cv_hi = round(min_price * 1.18, 2)
     search_urls = {r: SEARCH_URLS[r](query) for r in retailers}
     prompt = f"""Generate 2 realistic FSA-eligible product listings for "{query}" for each of these retailers: {', '.join(retailers)}.
 
-Price floor (must be higher than Amazon's ${min_price:.2f}):
-- walmart: above ${w_lo:.2f}
-- walgreens/cvs/fsastore: above ${cv_lo:.2f}
+Amazon's cheapest price is ${min_price:.2f}. Prices at other retailers must be SLIGHTLY higher — realistic, competitive, not dramatically more expensive:
+- walmart:   ${w_lo:.2f}–${w_hi:.2f}
+- walgreens: ${cv_lo:.2f}–${cv_hi:.2f}
+- cvs:       ${cv_lo:.2f}–${cv_hi:.2f}
+- fsastore:  ${cv_lo:.2f}–${cv_hi:.2f}
 
 Use these EXACT URLs (do not make up product URLs):
 {json.dumps(search_urls, indent=2)}
 
 Return ONLY a JSON array:
-[{{"name":"CVS Health Ibuprofen 200mg 100ct","price":14.99,"source":"cvs","url":"https://www.cvs.com/search?searchTerm=advil","rating":4.4,"fsa_confirmed":true}}]
+[{{"name":"CVS Health Ibuprofen 200mg 100ct","price":14.29,"source":"cvs","url":"https://www.cvs.com/search?searchTerm=advil","rating":4.4,"fsa_confirmed":true}}]
 
 Rules: real brand/generic names, rating 4.0–4.9, NO explanation."""
 
