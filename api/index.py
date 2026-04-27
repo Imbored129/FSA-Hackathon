@@ -58,8 +58,12 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
         if not is_product:
             continue
 
-        price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
-        price = float(price_match.group(1)) if price_match else 9.99 + (len(url) % 20) + (len(title) % 10) / 10.0
+        price = 0
+        for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
+            candidate = float(m.group(1))
+            if candidate >= 5.0:
+                price = candidate
+                break
 
         products.append({
             "name": title,

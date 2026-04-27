@@ -140,13 +140,13 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
         if not is_product:
             continue
 
-        # Try to extract a price from the snippet (e.g. "$12.99")
-        price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
-        if price_match:
-            price = float(price_match.group(1))
-        else:
-            # Generate a realistic mock price so sorting and UI still work nicely
-            price = 9.99 + (len(url) % 20) + (len(title) % 10) / 10.0
+        # Extract price from snippet — require >= $5 to avoid picking up discount amounts
+        price = 0
+        for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
+            candidate = float(m.group(1))
+            if candidate >= 5.0:
+                price = candidate
+                break
 
         products.append({
             "name": title,
