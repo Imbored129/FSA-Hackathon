@@ -104,8 +104,21 @@ def _match_category(query: str) -> str | None:
     return None
 
 
+def _clean_url(url: str, retailer: str) -> str:
+    """Return a clean canonical product URL, stripping tracking params."""
+    base = url.split("?")[0].split("#")[0].rstrip("/")
+    if retailer == "amazon":
+        m = re.search(r"/(dp|gp/product)/([A-Z0-9]{10})", base)
+        if m:
+            return f"https://www.amazon.com/dp/{m.group(2)}"
+    if retailer == "walmart":
+        m = re.search(r"(/ip/[^/]+/\d+)", base)
+        if m:
+            return f"https://www.walmart.com{m.group(1)}"
+    return base
+
+
 def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
-    """Convert raw Tavily search results into our product card format."""
     products = []
     for r in results:
         title = r.get("title", "")
@@ -113,16 +126,11 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
         content = r.get("content", "")
         score = r.get("score", 0)
 
-        # Skip results that aren't from the target retailer domain
-        retailer_domains = {
-            "amazon": "amazon.com",
-            "walmart": "walmart.com",
-        }
+        retailer_domains = {"amazon": "amazon.com", "walmart": "walmart.com"}
         domain = retailer_domains.get(retailer, "")
         if domain and domain not in url:
             continue
 
-        # Strict post-filter to prevent hallucinations
         text_to_check = (title + " " + content).lower()
         fsa_keywords = ["fsa", "hsa", "flexible spending", "health savings", "eligible"]
         if not any(kw in text_to_check for kw in fsa_keywords):
@@ -130,17 +138,15 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
 
         lower_url = url.lower()
         is_product = False
-        if retailer == "amazon":
-            if "/dp/" in lower_url or "/gp/product/" in lower_url:
-                is_product = True
-        elif retailer == "walmart":
-            if "/ip/" in lower_url:
-                is_product = True
-
+        if retailer == "amazon" and ("/dp/" in lower_url or "/gp/product/" in lower_url):
+            is_product = True
+        elif retailer == "walmart" and "/ip/" in lower_url:
+            is_product = True
         if not is_product:
             continue
 
-        # Extract price from snippet — require >= $5 to avoid picking up discount amounts
+        clean = _clean_url(url, retailer)
+
         price = 0
         for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
             candidate = float(m.group(1))
@@ -150,7 +156,7 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
 
         products.append({
             "name": title,
-            "url": url,
+            "url": clean,
             "content": content[:200],
             "price": price,
             "score": round(score, 3),
@@ -433,9 +439,14 @@ async def _tavily_search_walmart(query: str) -> list[dict]:
                     content = r.get("content", "")
                     if not title or "/ip/" not in url:
                         continue
-                    price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
-                    price = float(price_match.group(1)) if price_match else 0
-                    products.append({"name": title, "url": url, "price": price, "source": "walmart", "fsa_confirmed": True})
+                    clean = _clean_url(url, "walmart")
+                    price = 0
+                    for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
+                        candidate = float(m.group(1))
+                        if candidate >= 5.0:
+                            price = candidate
+                            break
+                    products.append({"name": title, "url": clean, "price": price, "source": "walmart", "fsa_confirmed": True})
                 return products
     except Exception as exc:
         print(f"[Tavily walmart] {exc}")

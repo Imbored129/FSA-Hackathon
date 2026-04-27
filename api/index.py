@@ -31,6 +31,19 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 OMKAR_API_KEY = os.getenv("OMKAR_API_KEY", "")
 
 
+def _clean_url(url: str, retailer: str) -> str:
+    base = url.split("?")[0].split("#")[0].rstrip("/")
+    if retailer == "amazon":
+        m = re.search(r"/(dp|gp/product)/([A-Z0-9]{10})", base)
+        if m:
+            return f"https://www.amazon.com/dp/{m.group(2)}"
+    if retailer == "walmart":
+        m = re.search(r"(/ip/[^/]+/\d+)", base)
+        if m:
+            return f"https://www.walmart.com{m.group(1)}"
+    return base
+
+
 def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
     products = []
     for r in results:
@@ -58,6 +71,7 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
         if not is_product:
             continue
 
+        clean = _clean_url(url, retailer)
         price = 0
         for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
             candidate = float(m.group(1))
@@ -67,7 +81,7 @@ def _parse_tavily_results(results: list, retailer: str) -> list[dict]:
 
         products.append({
             "name": title,
-            "url": url,
+            "url": clean,
             "content": content[:200],
             "price": price,
             "score": round(score, 3),
@@ -179,9 +193,14 @@ async def _tavily_search_walmart(query: str) -> list[dict]:
                     content = r.get("content", "")
                     if not title or "/ip/" not in url:
                         continue
-                    price_match = re.search(r"\$(\d+\.?\d{0,2})", content) or re.search(r"\$(\d+\.?\d{0,2})", title)
-                    price = float(price_match.group(1)) if price_match else 0
-                    products.append({"name": title, "url": url, "price": price, "source": "walmart", "fsa_confirmed": True})
+                    clean = _clean_url(url, "walmart")
+                    price = 0
+                    for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
+                        candidate = float(m.group(1))
+                        if candidate >= 5.0:
+                            price = candidate
+                            break
+                    products.append({"name": title, "url": clean, "price": price, "source": "walmart", "fsa_confirmed": True})
                 return products
     except Exception as e:
         print(f"[Tavily walmart] {e}")
