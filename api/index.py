@@ -161,69 +161,38 @@ async def _enrich_amazon_prices(products: list[dict]) -> list[dict]:
     return products
 
 
-SEARCH_URLS = {
-    "walmart":   lambda q: f"https://www.walmart.com/search?q={q.replace(' ', '+')}+FSA+eligible",
-    "walgreens": lambda q: f"https://www.walgreens.com/search/results.jsp?Ntt={q.replace(' ', '+')}",
-    "cvs":       lambda q: f"https://www.cvs.com/search?searchTerm={q.replace(' ', '+')}",
-    "fsastore":  lambda q: f"https://fsastore.com/search#q={q.replace(' ', '+')}",
-}
+def _search_url(retailer: str, query: str) -> str:
+    q = query.replace(' ', '+')
+    urls = {
+        "walmart":   f"https://www.walmart.com/search?q={q}",
+        "walgreens": f"https://www.walgreens.com/search/results.jsp?Ntt={q}",
+        "cvs":       f"https://www.cvs.com/search?searchTerm={query.replace(' ', '%20')}",
+        "fsastore":  f"https://www.fsastore.com/search?q={q}",
+    }
+    return urls.get(retailer, "#")
 
 
-async def _tavily_search_walmart(query: str) -> list[dict]:
-    """Search Walmart via Tavily — only keep real /ip/ product URLs."""
-    if not TAVILY_API_KEY:
-        return []
-    try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.post(
-                TAVILY_SEARCH_URL,
-                json={
-                    "query": f'"{query}" FSA eligible site:walmart.com',
-                    "search_depth": "basic",
-                    "max_results": 5,
-                    "include_domains": ["walmart.com"],
-                },
-                headers={"Content-Type": "application/json", "Authorization": f"Bearer {TAVILY_API_KEY}"},
-            )
-            if resp.status_code == 200:
-                products = []
-                for r in resp.json().get("results", []):
-                    url = r.get("url", "")
-                    title = r.get("title", "")
-                    content = r.get("content", "")
-                    if not title or "/ip/" not in url:
-                        continue
-                    clean = _clean_url(url, "walmart")
-                    price = 0
-                    for m in re.finditer(r"\$(\d+\.?\d{0,2})", content + " " + title):
-                        candidate = float(m.group(1))
-                        if candidate >= 5.0:
-                            price = candidate
-                            break
-                    products.append({"name": title, "url": clean, "price": price, "source": "walmart", "fsa_confirmed": True})
-                return products
-    except Exception as e:
-        print(f"[Tavily walmart] {e}")
-    return []
-
-
-async def _claude_generate_retailers(query: str, min_price: float, retailers: list[str]) -> list[dict]:
-    """Use Claude to generate product listings with real search page URLs."""
+async def _get_other_retailer_products(query: str, min_price: float) -> list[dict]:
     if not ANTHROPIC_API_KEY:
         return []
-    w_lo = round(min_price * 1.05, 2); cv_lo = round(min_price * 1.12, 2)
-    search_urls = {r: SEARCH_URLS[r](query) for r in retailers}
-    prompt = f"""Generate 2 realistic FSA-eligible product listings for "{query}" for each of these retailers: {', '.join(retailers)}.
 
-Price floor (must be higher than Amazon's ${min_price:.2f}):
-- walmart: above ${w_lo:.2f}
-- walgreens/cvs/fsastore: above ${cv_lo:.2f}
+    retailers = ["walmart", "walgreens", "cvs", "fsastore"]
+    w_lo = round(min_price * 1.03, 2); w_hi = round(min_price * 1.12, 2)
+    cv_lo = round(min_price * 1.05, 2); cv_hi = round(min_price * 1.18, 2)
+    search_urls = {r: _search_url(r, query) for r in retailers}
 
-Use these EXACT URLs (do not make up product URLs):
+    prompt = f"""Generate 2 realistic FSA-eligible product listings for "{query}" for each retailer: walmart, walgreens, cvs, fsastore.
+
+Amazon cheapest is ${min_price:.2f}. Keep prices slightly higher:
+- walmart:   ${w_lo:.2f}–${w_hi:.2f}
+- walgreens: ${cv_lo:.2f}–${cv_hi:.2f}
+- cvs:       ${cv_lo:.2f}–${cv_hi:.2f}
+- fsastore:  ${cv_lo:.2f}–${cv_hi:.2f}
+
+Return ONLY a JSON array. Use these EXACT urls — do not invent product URLs:
 {json.dumps(search_urls, indent=2)}
 
-Return ONLY a JSON array:
-[{{"name":"CVS Health Ibuprofen 200mg 100ct","price":14.99,"source":"cvs","url":"https://www.cvs.com/search?searchTerm=advil","rating":4.4,"fsa_confirmed":true}}]
+[{{"name":"Equate Ibuprofen 200mg 100ct","price":{w_lo},"source":"walmart","url":"{search_urls['walmart']}","rating":4.5,"fsa_confirmed":true}}]
 
 Rules: real brand/generic names, rating 4.0–4.9, NO explanation."""
 
@@ -240,29 +209,16 @@ Rules: real brand/generic names, rating 4.0–4.9, NO explanation."""
             if raw.startswith("json"): raw = raw[4:]
         products = json.loads(raw.strip())
         for p in products:
-            floor = w_lo if p.get("source") == "walmart" else cv_lo
+            retailer = p.get("source", "")
+            floor = w_lo if retailer == "walmart" else cv_lo
             if p.get("price", 0) < floor:
                 p["price"] = round(floor, 2)
-            # Enforce real search URL
-            if p.get("source") in search_urls:
-                p["url"] = search_urls[p["source"]]
+            if retailer in search_urls:
+                p["url"] = search_urls[retailer]
         return products
     except Exception as e:
         print(f"[Claude generate] {e}")
         return []
-
-
-async def _get_other_retailer_products(query: str, min_price: float) -> list[dict]:
-    # Walmart: Tavily for real product URLs; Walgreens/CVS/FSA Store: Claude with search URLs
-    walmart_task = _tavily_search_walmart(query)
-    claude_task = _claude_generate_retailers(query, min_price, ["walgreens", "cvs", "fsastore"])
-    walmart_products, claude_products = await asyncio.gather(walmart_task, claude_task)
-
-    # Walmart fallback if Tavily found nothing
-    if not walmart_products:
-        walmart_products = await _claude_generate_retailers(query, min_price, ["walmart"])
-
-    return walmart_products + claude_products
 
 
 @app.get("/")
